@@ -51,10 +51,10 @@ def chat_completions():
     # Call hugging-chat-api
     try:
         if stream:
-            return Response(stream_with_context(stream_response(last_message, web_search, data['model'])), 
+            return Response(stream_with_context(stream_response(last_message, data['model'])), 
                             content_type='text/event-stream')
         else:
-            return non_stream_response(last_message, web_search, data['model'])
+            return non_stream_response(last_message, data['model'])
     
     except Exception as e:
         return jsonify({
@@ -66,7 +66,7 @@ def chat_completions():
             }
         }), 500
 
-def stream_response(message, web_search, model):
+def stream_response(message, model):
     for response in chatbot.query(message, stream=True):
         chunk = {
             "id": f"chatcmpl-{uuid.uuid4()}",
@@ -98,7 +98,7 @@ def stream_response(message, web_search, model):
     yield f"data: {json.dumps(final_chunk)}\n\n"
     yield "data: [DONE]\n\n"
 
-def non_stream_response(message, web_search, model):
+def non_stream_response(message, model):
     response = chatbot.query(message)
     
     openai_response = {
@@ -120,13 +120,6 @@ def non_stream_response(message, web_search, model):
             "total_tokens": 0
         }
     }
-    
-    # If web search is enabled and supported, add source information
-    if web_search and isinstance(response, hugchat.ChatMessage) and hasattr(response, 'web_search_sources'):
-        openai_response["sources"] = [
-            {"link": source.link, "title": source.title, "hostname": source.hostname}
-            for source in response.web_search_sources
-        ]
     
     return jsonify(openai_response)
 
