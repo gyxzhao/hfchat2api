@@ -7,6 +7,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN pip install --upgrade hugchat
 COPY app.py .
 
 # 显式暴露端口5000
