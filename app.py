@@ -4,19 +4,36 @@ from hugchat import hugchat
 from hugchat.login import Login
 import time
 import uuid
+from functools import wraps
 
 app = Flask(__name__)
 
-# 从环境变量获取账号信息
+# 从环境变量获取账号信息和API密钥
 EMAIL = os.environ.get('HUGCHAT_EMAIL')
 PASSWORD = os.environ.get('HUGCHAT_PASSWORD')
+AUTH_KEY = os.environ.get('AUTH_KEY')
 
 # 初始化chatbot
 sign = Login(EMAIL, PASSWORD)
 cookies = sign.login()
 chatbot = hugchat.ChatBot(cookies=cookies.get_dict())
 
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get('Authorization')
+        if auth_header:
+            try:
+                auth_type, auth_token = auth_header.split(None, 1)
+                if auth_type.lower() == 'bearer' and auth_token == AUTH_KEY:
+                    return f(*args, **kwargs)
+            except ValueError:
+                pass
+        return jsonify({"error": "Invalid or missing API key"}), 401
+    return decorated
+
 @app.route('/v1/chat/completions', methods=['POST'])
+@require_auth
 def chat_completions():
     data = request.json
     
@@ -72,6 +89,7 @@ def chat_completions():
         }), 500
 
 @app.route('/v1/models', methods=['GET'])
+@require_auth
 def list_models():
     try:
         models = chatbot.get_available_llm_models()
