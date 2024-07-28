@@ -1,19 +1,20 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from hugchat import hugchat
 from hugchat.login import Login
 import time
 import uuid
 from functools import wraps
+import json
 
 app = Flask(__name__)
 
-# 从环境变量获取账号信息和API密钥
+# Get account information and API key from environment variables
 EMAIL = os.environ.get('HUGCHAT_EMAIL')
 PASSWORD = os.environ.get('HUGCHAT_PASSWORD')
 AUTH_KEY = os.environ.get('AUTH_KEY')
 
-# 初始化chatbot
+# Initialize chatbot
 sign = Login(EMAIL, PASSWORD)
 cookies = sign.login()
 chatbot = hugchat.ChatBot(cookies=cookies.get_dict())
@@ -37,46 +38,23 @@ def require_auth(f):
 def chat_completions():
     data = request.json
     
-    # 检查是否启用联网搜索
+    # Check if web search is enabled
     web_search = 'internet' in data['model'].lower()
     
-    # 构造消息
+    # Check if streaming is requested
+    stream = data.get('stream', False)
+    
+    # Construct messages
     messages = data['messages']
     last_message = messages[-1]['content']
     
-    # 调用hugging-chat-api
+    # Call hugging-chat-api
     try:
-        response = chatbot.query(last_message, web_search=web_search)
-        
-        # 构造OpenAI格式的响应
-        openai_response = {
-            "id": f"chatcmpl-{uuid.uuid4()}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": data['model'],
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": response.text if isinstance(response, hugchat.ChatMessage) else response
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0
-            }
-        }
-        
-        # 如果启用了联网搜索，添加源信息
-        if web_search and isinstance(response, hugchat.ChatMessage) and response.web_search_sources:
-            openai_response["sources"] = [
-                {"link": source.link, "title": source.title, "hostname": source.hostname}
-                for source in response.web_search_sources
-            ]
-        
-        return jsonify(openai_response)
+        if stream:
+            return Response(stream_with_context(stream_response(last_message, web_search, data['model'])), 
+                            content_type='text/event-stream')
+        else:
+            return non_stream_response(last_message, web_search, data['model'])
     
     except Exception as e:
         return jsonify({
@@ -87,6 +65,70 @@ def chat_completions():
                 "code": None
             }
         }), 500
+
+def stream_response(message, web_search, model):
+    for response in chatbot.query(message, stream=True):
+        chunk = {
+            "id": f"chatcmpl-{uuid.uuid4()}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "content": response
+                },
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
+    
+    # Send the final chunk
+    final_chunk = {
+        "id": f"chatcmpl-{uuid.uuid4()}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }
+    yield f"data: {json.dumps(final_chunk)}\n\n"
+    yield "data: [DONE]\n\n"
+
+def non_stream_response(message, web_search, model):
+    response = chatbot.query(message)
+    
+    openai_response = {
+        "id": f"chatcmpl-{uuid.uuid4()}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": response.text if isinstance(response, hugchat.ChatMessage) else response
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
+    }
+    
+    # If web search is enabled and supported, add source information
+    if web_search and isinstance(response, hugchat.ChatMessage) and hasattr(response, 'web_search_sources'):
+        openai_response["sources"] = [
+            {"link": source.link, "title": source.title, "hostname": source.hostname}
+            for source in response.web_search_sources
+        ]
+    
+    return jsonify(openai_response)
 
 @app.route('/v1/models', methods=['GET'])
 @require_auth
